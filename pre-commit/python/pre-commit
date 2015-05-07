@@ -1,0 +1,122 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import subprocess
+import sys
+import atexit
+import re
+import importlib
+import importlib.machinery
+
+def main():
+    print("Running Pre-Commit Hooks")
+    all_files = False
+    result = 0
+    if len(sys.argv) > 1 and sys.argv[1] == '--all-files':
+        all_files = True
+    try:
+        stash_uncommitted()
+    except:
+        print("""Stashing uncommitted changes failed.
+Attempting to unstash changes so you can commit your code.
+Its more important than the pre-commit hooks being bonkers.""")
+    else:
+        try:
+            files = get_files(all_files)
+            result = run_checks(files)
+            if result == 0:
+                print("Your commit has passed all tests SUCCESSFULLY!")
+        except:
+            print("An exception was encountered when trying to run the pre-commit tests. You get off this time...")
+            result = 0
+    unstash_uncommitted()
+    sys.exit(result)
+
+
+def stash_uncommitted():
+    """
+    Stashes away changes to the working tree that wont be committed.
+
+    @return a list of paths to files.
+    """
+    # Stash any changes to the working tree that are not going to be committed
+    subprocess.call(['git', 'stash', '-u', '--keep-index'], stdout=subprocess.PIPE)
+
+def get_files(all_files):
+    modified = re.compile('^[ACM]+\s+(?P<name>.*\.py)', re.MULTILINE)
+    files = []
+    if all_files:
+        try:
+            for root, dirs, file_names in os.walk('.'):
+                for file_name in file_names:
+                    files.append(os.path.join(root, file_name))
+        except Exception as _ex:
+            print(str(_ex)+" encountered")
+    else:
+        #get clean list of files
+        try:
+            p = subprocess.Popen(['git', 'status', '-z'], stdout=subprocess.PIPE)
+            out, err = p.communicate()
+        except Exception as _ex:
+            print("Could not get the current file status")
+            print(_ex)
+        try:
+            byte_file_list = out.split(b"\x00")
+            for line in byte_file_list:
+                match = modified.match(line.decode('utf-8'))
+                if match:
+                    files.append(match.group('name'))
+        except:
+            print("could not find any of the committed files.")
+    return files
+    
+def run_checks(files):
+    """
+    Attempts to run all pre-defined test_scripts it can find.
+
+    @param files list of file paths.
+    @return error code is 0 if successful and 1 if errors occured.
+    """
+    failed_checks = []
+    flair= "\n" + ( "=" * 42 ) + "\n"
+    test_scripts = ["timestamp", "find_forbidden", "no_master", "pep8"]
+    err = 0
+    result = 0
+    for script in test_scripts:
+        lib = None
+        check = None
+        result = 0
+        try:
+            _path = sys.path[0]
+            _path = str(_path+"/"+script+".py")
+            loader = importlib.machinery.SourceFileLoader("module.name", _path)
+            lib = loader.load_module("module.name")
+            check = lib.TestSuite()
+        except Exception as _ee:
+            pass
+            print(flair+"Could not load test module "+script+flair)
+        else:
+            try:
+                print(flair+"Starting test "+script+flair)
+                result = check.run(files)
+            except:
+                pass
+                print("an exception was encountered attempting to run "+script+". We consider that a pass.")
+                result = 0
+        if result == 1:
+            failed_checks.append(script)
+            err = 1
+    if err == 1:
+        print(flair+"You have failed "+str(len(failed_checks))+" tests."+flair)
+    return err
+
+def unstash_uncommitted():
+    # Unstash changes to the working tree
+    # https://stackoverflow.com/questions/20479794/how-do-i-properly-git-stash-pop-in-pre-commit-hooks-to-get-a-clean-working-tree
+    subprocess.call(['git', 'reset', '--hard'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    subprocess.call(['git', 'stash', 'pop', '--quiet', '--index'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    
+if __name__ == '__main__':
+    main()
+
